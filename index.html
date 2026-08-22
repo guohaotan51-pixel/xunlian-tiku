@@ -80,6 +80,16 @@
         </div>
       </div>
 
+      <!-- order -->
+      <div class="field">
+        <label class="label">推送顺序</label>
+        <div class="seg" id="order-seg">
+          <button class="seg-btn active" data-order="ordered">顺序</button>
+          <button class="seg-btn" data-order="shuffle">乱序</button>
+        </div>
+        <p class="hint">顺序＝按题号从小到大推“未练习”，自动跳过已练习，偶尔穿插错题</p>
+      </div>
+
       <!-- paper config -->
       <div id="paper-config" class="field">
         <label class="label">试题数量</label>
@@ -110,7 +120,7 @@
 
       <label class="toggle-row">
         <input type="checkbox" id="mix-check" checked>
-        <span>侧重错题（错题优先，自动穿插）</span>
+        <span>智能推送：先“未练习”，再“错题”，“已掌握(≥3连对)”不再推送</span>
       </label>
 
       <button class="btn-primary" id="start-btn">开始刷题</button>
