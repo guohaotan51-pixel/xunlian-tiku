@@ -150,6 +150,31 @@ body{
 .nav-btn span{font-size:19px}
 .nav-btn.active{color:var(--accent-dark);font-weight:700}
 
+/* question head + status pills */
+.q-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.pill.q-status{font-weight:700}
+.st-unseen{background:#eef1ec;color:#7a8377}
+.st-wrong{background:var(--red-soft);color:var(--red)}
+.st-correct{background:#eef5ea;color:var(--accent-dark)}
+.st-correct2{background:#e7f3f0;color:#2f8f7d}
+.st-mastered{background:#e9edf6;color:#5a7fd6}
+.pill.q-ans{font-weight:700}
+
+/* session footer nav (prev / next) */
+.session-foot{display:flex;gap:10px;align-items:stretch}
+.session-foot.hidden{display:none}
+.btn-ghost.nav-prev{flex:1;padding:14px;border:2px solid var(--line);background:var(--card);border-radius:14px;color:var(--ink-soft);font-weight:700;font-size:15px;cursor:pointer;flex:0 0 120px}
+.btn-primary.nav-next{flex:1;margin:0;padding:14px}
+
+/* result hero: emoji + stars + message */
+.result-hero{text-align:center;padding:6px 0 2px}
+.result-emoji{font-size:54px;line-height:1}
+.stars{font-size:30px;letter-spacing:4px;margin:8px 0 2px}
+.star{color:#ddd7c8}
+.star.on{color:var(--amber);text-shadow:0 2px 6px rgba(201,139,47,.35)}
+.result-msg{font-size:18px;font-weight:800;color:var(--ink);margin-top:4px}
+.result-sub{font-size:13px;color:var(--ink-soft);margin-top:2px}
+
 @media (max-width:420px){
   .q-stem{font-size:15.5px}
 }
