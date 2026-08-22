@@ -27,6 +27,24 @@
     return st;
   }
 
+  /* ---------------- Question status tags (未练习 > 错题 > 已练习) ---------------- */
+  const STATUS = {
+    unseen:   { key: 'unseen',   label: '未练习',   pill: 'st-unseen' },
+    wrong:    { key: 'wrong',    label: '错题',     pill: 'st-wrong' },
+    correct:  { key: 'correct',  label: '已练习',   pill: 'st-correct' },
+    correct2: { key: 'correct2', label: '连续正确', pill: 'st-correct2' },
+    mastered: { key: 'mastered', label: '已掌握',   pill: 'st-mastered' },
+  };
+  function statusOf(id) {
+    const st = progress.q[id];
+    if (!st || !st.seen) return STATUS.unseen;
+    if (st.wrong > 0 && st.streak < 3) return STATUS.wrong;
+    if (st.streak >= 3) return STATUS.mastered;   // 连续正确>=3，不再推送
+    if (st.streak >= 2) return STATUS.correct2;
+    return STATUS.correct;
+  }
+  function isPushable(id) { return statusOf(id).key !== 'mastered'; }
+
   /* ---------------- App state ---------------- */
   const state = {
     view: 'home',
@@ -35,7 +53,8 @@
     paperSize: 20,
     specialType: 'single',
     specialCount: 10,
-    mix: true,
+    order: 'ordered',    // 'ordered' 顺序(按题号) / 'shuffle' 乱序
+    mix: true,           // 侧重未练/错题优先推送
     session: null,       // active practice session
     errorsFilter: 'all',
     lastResult: null,
@@ -68,30 +87,22 @@
     window.scrollTo(0, 0);
   }
 
-  /* ---------------- Weighted selection ---------------- */
-  function questionWeight(item, mix) {
-    const st = progress.q[item.id];
-    if (mix !== false) {
-      if (!st || !st.seen) return 1.0;                 // unseen -> normal
-      if (st.wrong > 0 && st.streak < 3) {             // active error book
-        let w = 3.0;
-        if (st.streak === 0) w += 2.0;                 // just answered wrong -> highest
-        else if (st.wrong >= 2) w += 1.5;              // frequently wrong -> drill
-        else w += 0.6;                                 // returning correctly 1-2x -> keep reviewing
-        return w;
-      }
-      if (st.firstTryCorrect && st.correct > 0) return 0.25; // correct on first try -> lower priority
-      return 1.0;
-    }
-    return 1.0; // uniform when mix disabled
+  /* ---------------- Recommendation & selection (未练习>错题>已练习, 掌握≥3不推送) ---------------- */
+  function questionWeight(item) {
+    const s = statusOf(item.id).key;
+    if (s === 'mastered') return 0;        // 连续正确≥3：不再推送
+    if (s === 'unseen') return 4;          // 优先未练习
+    if (s === 'wrong') return 3;           // 其次错题
+    if (s === 'correct2') return 1.2;      // 已连续正确
+    return 1;                              // 已练习正确（最低优先）
   }
 
-  function sampleWeighted(pool, n, mix) {
+  function sampleWeighted(pool, n) {
     const copy = pool.slice();
     const out = [];
     while (out.length < n && copy.length) {
-      let total = 0;
-      const weights = copy.map((it) => { const w = questionWeight(it, mix); total += w; return w; });
+      const weights = copy.map((it) => questionWeight(it));
+      const total = weights.reduce((a, b) => a + b, 0);
       let r = Math.random() * total;
       let idx = copy.length - 1;
       for (let k = 0; k < copy.length; k++) { r -= weights[k]; if (r <= 0) { idx = k; break; } }
@@ -101,35 +112,64 @@
     return out;
   }
 
+  // 顺序模式：按题号从小到大推送未练习，自动跳过已练习，偶尔穿插错题；未练+错题不足时再补已练习。
+  function orderedSelect(pool, count, emphasize) {
+    const unseen = pool.filter((q) => statusOf(q.id).key === 'unseen').sort((a, b) => a.num - b.num);
+    const wrongs = pool.filter((q) => statusOf(q.id).key === 'wrong');
+    const rest = pool.filter((q) => { const k = statusOf(q.id).key; return k === 'correct' || k === 'correct2'; }).sort((a, b) => a.num - b.num);
+    const seq = [];
+    let ui = 0, wi = 0, ri = 0, spot = 0;
+    while (seq.length < count && (ui < unseen.length || wi < wrongs.length || ri < rest.length)) {
+      const sprinkle = emphasize && wi < wrongs.length && seq.length > 0 && (spot % 3 === 2);
+      if (sprinkle) {
+        seq.push(wrongs[wi++]);
+      } else if (ui < unseen.length) {
+        seq.push(unseen[ui++]);
+      } else if (wi < wrongs.length) {
+        seq.push(wrongs[wi++]);
+      } else if (ri < rest.length) {
+        seq.push(rest[ri++]);
+      } else {
+        break;
+      }
+      spot++;
+    }
+    return seq;
+  }
+
+  function selectFromPool(pool, count, mode, emphasize) {
+    if (mode === 'ordered') return orderedSelect(pool, count, emphasize);
+    // 乱序：优先未练/错题（emphasize），但始终排除“已掌握(≥3连续正确)”
+    const pushable = pool.filter((q) => isPushable(q.id));
+    if (!emphasize || !pushable.length) { shuffle(pushable); return pushable.slice(0, count); }
+    return sampleWeighted(pushable, Math.min(count, pushable.length));
+  }
+
   function mixCounts(total, bank) {
     const s = bank.single.length, m = bank.multi.length, j = bank.judgment.length;
-    // base ratio single/multi/judgment
     let ns = Math.max(1, Math.min(s, Math.round(total * 0.5)));
     let nm = Math.max(1, Math.min(m, Math.round(total * 0.3)));
     let nj = Math.max(1, Math.min(j, Math.round(total * 0.2)));
     const avail = s + m + j;
     total = Math.min(total, avail);
-    // fix up to exactly total
     let guard = 0;
     while ((ns + nm + nj) !== total && guard++ < 40) {
       const cur = ns + nm + nj;
       const types = [
-        ['single', () => ns, (v) => { ns = v; }],
-        ['multi', () => nm, (v) => { nm = v; }],
-        ['judgment', () => nj, (v) => { nj = v; }],
+        ['single', () => ns, (v) => { ns = v; }, s],
+        ['multi', () => nm, (v) => { nm = v; }, m],
+        ['judgment', () => nj, (v) => { nj = v; }, j],
       ];
       if (cur < total) {
-        // add to the type with the most remaining headroom
-        const head = types.map((t) => ({ k: t[0], v: t[1](), cap: t[0] === 'single' ? s : t[0] === 'multi' ? m : j }));
+        const head = types.map((t) => ({ k: t[0], v: t[1](), cap: t[3] }));
         head.sort((a, b) => (b.cap - b.v) - (a.cap - a.v));
         const hh = head[0];
-        hh.v === 'single' ? (ns++) : hh.v === 'multi' ? (nm++) : (nj++);
+        if (hh.k === 'single') ns++; else if (hh.k === 'multi') nm++; else nj++;
       } else {
-        // remove from the type still above minimum
         const canRemove = types.filter((t) => t[1]() > 1);
         if (!canRemove.length) break;
         const rr = canRemove[canRemove.length - 1][0];
-        rr === 'single' ? (ns--) : rr === 'multi' ? (nm--) : (nj--);
+        if (rr === 'single') ns--; else if (rr === 'multi') nm--; else nj--;
       }
     }
     return { single: ns, multi: nm, judgment: nj };
@@ -137,18 +177,17 @@
 
   function buildPaperQueue(subject, config) {
     const bank = QUESTION_BANK.subjects[subject].sections;
-    const total = config.size;
-    const c = mixCounts(total, bank);
+    const c = mixCounts(config.size, bank);
     let qs = [];
-    qs = qs.concat(sampleWeighted(bank.single, c.single, config.mix));
-    qs = qs.concat(sampleWeighted(bank.multi, c.multi, config.mix));
-    qs = qs.concat(sampleWeighted(bank.judgment, c.judgment, config.mix));
-    shuffle(qs);
+    qs = qs.concat(selectFromPool(bank.single, c.single, config.order, config.mix));
+    qs = qs.concat(selectFromPool(bank.multi, c.multi, config.order, config.mix));
+    qs = qs.concat(selectFromPool(bank.judgment, c.judgment, config.order, config.mix));
+    if (config.order === 'shuffle') shuffle(qs);
     return qs;
   }
   function buildSpecialQueue(subject, config) {
     const bank = QUESTION_BANK.subjects[subject].sections[config.type];
-    return sampleWeighted(bank, Math.min(config.count, bank.length), config.mix);
+    return selectFromPool(bank, Math.min(config.count, bank.length), config.order, config.mix);
   }
   function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
@@ -179,32 +218,44 @@
   /* ---------------- Session ---------------- */
   function startSession(mode) {
     const subject = state.subject;
+    const cfg = { order: state.order, mix: state.mix };
     let questions;
-    if (mode === 'paper') questions = buildPaperQueue(subject, { size: state.paperSize, mix: state.mix });
-    else questions = buildSpecialQueue(subject, { type: state.specialType, count: state.specialCount, mix: state.mix });
+    if (mode === 'paper') questions = buildPaperQueue(subject, Object.assign({ size: state.paperSize }, cfg));
+    else questions = buildSpecialQueue(subject, Object.assign({ type: state.specialType, count: state.specialCount }, cfg));
 
     if (!questions.length) { alert('该科目/题型暂无题目'); return; }
     state.session = {
       subject, mode, questions,
-      index: 0, results: [],
-      correct: 0, wrong: 0,
+      index: 0,
+      answers: new Array(questions.length).fill(null), // {picked, correct}
     };
-    $('#session-title').textContent = `${SUB[subject].name} · ${mode === 'paper' ? '自动组卷' : TYPE[state.specialType].name + '专项'}`;
-    $('#session-progress').textContent = `1 / ${questions.length}`;
+    $('#session-title').textContent = `${SUB[subject].name} · ${mode === 'paper' ? '自动组卷' : TYPE[state.specialType].name + '专项'}${state.order === 'ordered' ? '（顺序）' : '（乱序）'}`;
+    updateProgress();
     $('.session-foot').classList.add('hidden');
     showView('session');
     renderQuestion();
   }
 
   let multiSel = []; // for multi-select
+
+  function statusPillHtml(id) {
+    const st = statusOf(id);
+    return `<span class="pill q-status ${st.pill}">${st.label}</span>`;
+  }
+
   function renderQuestion() {
     const s = state.session;
     const q = s.questions[s.index];
+    const ans = s.answers[s.index];
     multiSel = [];
     const body = $('#session-body');
     const typeLabel = TYPE[q.type];
     body.innerHTML = `
-      <div class="q-type ${typeLabel.clazz}">${typeLabel.name}</div>
+      <div class="q-head">
+        <span class="q-type ${typeLabel.clazz}">${typeLabel.name}</span>
+        ${statusPillHtml(q.id)}
+        ${ans ? `<span class="pill q-ans ${ans.correct ? 'st-correct' : 'st-wrong'}">${ans.correct ? '✓ 已答对' : '✗ 已答错'}</span>` : ''}
+      </div>
       <div class="q-stem"><span class="q-num">${q.num}.</span>${escapeHtml(q.stem)}</div>
       ${q.type === 'judgment'
         ? `<div class="judge-btns">
@@ -217,32 +268,52 @@
            ${q.type === 'multi' ? '<button class="btn-primary" id="multi-confirm" disabled>确认答案</button>' : ''}`}
       <div id="expl-slot"></div>
     `;
-    // single: tap = immediate evaluate; multi: toggle; judgment: tap judge
-    if (q.type === 'single') {
-      $$('.opt', body).forEach((el) => el.addEventListener('click', () => evaluateSingle(q, el)));
-    } else if (q.type === 'multi') {
-      $$('.opt', body).forEach((el) => el.addEventListener('click', () => toggleMulti(el)));
-      $('#multi-confirm').addEventListener('click', () => evaluateMulti(q));
+
+    if (ans) {
+      // already answered -> show feedback (review mode)
+      if (q.type === 'judgment') markJudge(q, ans.picked);
+      else markOptions(q, ans.picked);
+      showExplanation(ans.correct, q);
     } else {
-      $$('.judge-btn', body).forEach((el) => el.addEventListener('click', () => evaluate(q, el.dataset.judge === 'true')));
+      if (q.type === 'single') $$('#session-body .opt').forEach((el) => el.addEventListener('click', () => evaluateSingle(q, el)));
+      else if (q.type === 'multi') { $$('#session-body .opt').forEach((el) => el.addEventListener('click', () => toggleMulti(el))); $('#multi-confirm').addEventListener('click', () => evaluateMulti(q)); }
+      else $$('#session-body .judge-btn').forEach((el) => el.addEventListener('click', () => evaluate(q, el.dataset.judge === 'true')));
     }
+    renderFooter();
   }
 
-  function finished(s) {
-    s.finished = true;
-    $('#session-progress').textContent = `完成 · ${s.results.length} 题`;
-    const foot = $('.session-foot');
-    foot.innerHTML = '<button class="btn-primary wide" id="go-result">查看结果</button>';
-    $('#go-result').addEventListener('click', () => showResult());
-    $('.session-foot').classList.remove('hidden');
-  }
-
-  function advance() {
+  function renderFooter() {
     const s = state.session;
-    s.index++;
-    if (s.index >= s.questions.length) { finished(s); return; }
-    $('#session-progress').textContent = `${s.index + 1} / ${s.questions.length}`;
+    const n = s.questions.length;
+    const done = s.answers.filter(Boolean).length;
+    const allDone = done === n;
+    const cur = s.answers[s.index];
+    const foot = $('.session-foot');
+    if (!cur) { foot.classList.add('hidden'); foot.innerHTML = ''; return; }
+    foot.classList.remove('hidden');
+    let html = '';
+    if (s.index > 0) html += '<button class="btn-ghost nav-prev" id="prev-btn">‹ 上一题</button>';
+    if (!allDone) html += '<button class="btn-primary nav-next" id="next-btn">下一题 ›</button>';
+    else html += '<button class="btn-primary wide" id="go-result">查看结果</button>';
+    foot.innerHTML = html;
+    const pb = $('#prev-btn'); if (pb) pb.addEventListener('click', () => goIndex(s.index - 1));
+    const nb = $('#next-btn'); if (nb) nb.addEventListener('click', () => goIndex(s.index + 1));
+    const gr = $('#go-result'); if (gr) gr.addEventListener('click', () => showResult());
+  }
+
+  function goIndex(i) {
+    const s = state.session;
+    if (i < 0) i = 0;
+    if (i >= s.questions.length) { showResult(); return; }
+    s.index = i;
+    updateProgress();
     renderQuestion();
+    window.scrollTo(0, 0);
+  }
+
+  function updateProgress() {
+    const s = state.session;
+    $('#session-progress').textContent = `${s.index + 1} / ${s.questions.length}`;
   }
 
   function evaluateSingle(q, el) {
@@ -263,8 +334,7 @@
     finishAnswer(q, multiSel.slice(), correct);
   }
   function evaluate(q, picked) {
-    const btn = $$('.judge-btn').find((b) => (b.dataset.judge === 'true') === picked);
-    btn.classList.add(picked === q.answer ? 'correct' : 'wrong');
+    markJudge(q, picked);
     const correct = isCorrect(q, picked);
     finishAnswer(q, picked, correct);
   }
@@ -279,48 +349,74 @@
       else if (isPicked && !isCorrectKey) el.classList.add('wrong');
       else if (!isPicked && isCorrectKey) el.classList.add('correct', 'dim');
       else el.classList.add('dim');
-      const icon = el.classList.contains('correct') ? '' : el.classList.contains('wrong') ? '' : '';
     });
+  }
+
+  function markJudge(q, picked) {
+    $$('#session-body .judge-btn').forEach((b) => {
+      const isPicked = (b.dataset.judge === 'true') === picked;
+      b.disabled = true;
+      if (isPicked) b.classList.add(picked === q.answer ? 'correct' : 'wrong');
+    });
+  }
+
+  function showExplanation(correct, q) {
+    const expl = $('#expl-slot');
+    expl.innerHTML = `<div class="expl"><b>${correct ? '回答正确' : '回答错误'}</b><div class="en">${escapeHtml(q.explanation || '')}</div></div>`;
   }
 
   function finishAnswer(q, picked, correct) {
     const s = state.session;
+    s.answers[s.index] = { picked, correct };
     recordAnswer(q, correct);
-    s.results.push({ item: q, picked, correct });
-    correct ? s.correct++ : s.wrong++;
-    const foot = $('.session-foot');
-    foot.classList.remove('hidden');
-    const isLast = s.index + 1 >= s.questions.length;
-    if (isLast) {
-      s.finished = true;
-      $('#session-progress').textContent = `完成 · ${s.results.length} 题`;
-      foot.innerHTML = `<button class="btn-primary wide" id="go-result">查看结果</button>`;
-      $('#go-result').addEventListener('click', () => showResult());
-    } else {
-      foot.innerHTML = `<button class="btn-primary wide" id="next-btn">下一题 ›</button>`;
-      $('#next-btn').addEventListener('click', () => advance());
-    }
-    // explanation
-    const expl = $('#expl-slot');
-    expl.innerHTML = `<div class="expl"><b>${correct ? '回答正确' : '回答错误'}</b><div class="en">${escapeHtml(q.explanation || '')}</div></div>`;
+    showExplanation(correct, q);
+    renderFooter();
     $('#session-body').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   /* ---------------- Result ---------------- */
+  function starEval(pct) {
+    if (pct >= 100) return { stars: 5, msg: '满分！你是最棒的！！', emoji: '🏆', sub: '全部答对，无可挑剔！' };
+    if (pct >= 95) return { stars: 5, msg: '接近满分，你是最棒的！！', emoji: '🤩', sub: '只差一点点，继续保持！' };
+    if (pct >= 90) return { stars: 4, msg: '你是最棒的！！', emoji: '😄', sub: '正确率超九成，非常优秀！' };
+    if (pct >= 80) return { stars: 4, msg: '很棒，继续加油！', emoji: '😊', sub: '已经相当出色了！' };
+    if (pct >= 70) return { stars: 3, msg: '不错哦，再接再厉！', emoji: '🙂', sub: '多练几套会更稳！' };
+    if (pct >= 60) return { stars: 2, msg: '有进步！多练练会更好～', emoji: '😐', sub: '把错题再过一遍吧。' };
+    return { stars: 1, msg: '别灰心，去错题集再练一遍吧！', emoji: '😅', sub: '坚持就是胜利。' };
+  }
+  function starHtml(stars) {
+    let h = '';
+    for (let i = 1; i <= 5; i++) h += `<span class="star ${i <= stars ? 'on' : ''}">★</span>`;
+    return h;
+  }
+
   function showResult() {
     const s = state.session;
-    const total = s.results.length;
-    const correct = s.correct;
+    const results = s.answers.filter(Boolean);
+    const total = results.length;
+    const correct = results.filter((r) => r.correct).length;
+    const wrong = total - correct;
     const pct = total ? Math.round((correct / total) * 100) : 0;
     progress.papers = (progress.papers || 0) + 1;
     saveProgress();
+    const se = starEval(pct);
     const byType = {};
-    s.results.forEach((r) => { byType[r.item.type] = byType[r.item.type] || { c: 0, n: 0 }; byType[r.item.type].n++; if (r.correct) byType[r.item.type].c++; });
+    results.forEach((r, i) => {
+      const t = s.questions[i].type;
+      byType[t] = byType[t] || { c: 0, n: 0 };
+      byType[t].n++; if (r.correct) byType[t].c++;
+    });
     const typeStats = Object.keys(byType).map((t) => `
       <div class="stat-box"><div class="n">${byType[t].c}/${byType[t].n}</div><div class="l">${TYPE[t].name}</div></div>`).join('');
     $('#result-body').innerHTML = `
+      <div class="result-hero">
+        <div class="result-emoji">${se.emoji}</div>
+        <div class="stars">${starHtml(se.stars)}</div>
+        <div class="result-msg">${se.msg}</div>
+        <div class="result-sub">${se.sub}</div>
+      </div>
       <div class="score-big">${pct}%</div>
-      <div class="score-sub">完成 ${total} 题 · 答对 ${correct} · 答错 ${total - correct}</div>
+      <div class="score-sub">完成 ${total} 题 · 答对 ${correct} · 答错 ${wrong}</div>
       <div class="stat-grid">${typeStats}</div>
       <div class="stat-grid">
         <div class="stat-box"><div class="n">${progress.papers}</div><div class="l">累计试卷</div></div>
@@ -418,7 +514,7 @@
     const qs = ids.map((id) => findQuestion(id)).filter(Boolean);
     if (!qs.length) return;
     state.subject = qs[0].subject;
-    state.session = { subject: state.subject, mode: 'error', questions: qs, index: 0, results: [], correct: 0, wrong: 0 };
+    state.session = { subject: state.subject, mode: 'error', questions: qs, index: 0, answers: new Array(qs.length).fill(null) };
     $('#session-title').textContent = '错题复习';
     $('#session-progress').textContent = `1 / ${qs.length}`;
     $('.session-foot').classList.add('hidden');
@@ -428,7 +524,7 @@
 
   function openQuestionById(id) {
     const it = findQuestion(id); if (!it) return;
-    state.session = { subject: it.subject, mode: 'singleview', questions: [it], index: 0, results: [], correct: 0, wrong: 0 };
+    state.session = { subject: it.subject, mode: 'singleview', questions: [it], index: 0, answers: [null] };
     $('#session-title').textContent = '查看题目';
     $('#session-progress').textContent = '1 / 1';
     $('.session-foot').classList.add('hidden');
@@ -547,21 +643,34 @@
       if (st.correct) c += st.correct;
       if (st.wrong) n += st.wrong;
       const it = findQuestion(id); const sub = it ? it.subject : 'dianzi';
-      bySub[sub] = bySub[sub] || { c: 0, n: 0 };
+      bySub[sub] = bySub[sub] || { c: 0, n: 0, comp: 0 };
       if (st.correct) bySub[sub].c += st.correct;
       if (st.wrong) bySub[sub].n += st.wrong;
+      if (st.seen) bySub[sub].comp++;
     }
     const ans = c + n ? Math.round((c / (c + n)) * 100) : 0;
-    const list = Object.keys(bySub).map((s) => {
-      const ss = bySub[s]; const p = ss.c + ss.n ? Math.round((ss.c / (ss.c + ss.n)) * 100) : 0;
-      return `<div class="stat-card"><h3>${SUB[s].name} · 原题 ${QUESTION_BANK.subjects[s].sections.single.length + QUESTION_BANK.subjects[s].sections.multi.length + QUESTION_BANK.subjects[s].sections.judgment.length} 题</h3>
-        <p style="margin:0;color:var(--ink-soft);font-size:13px">作答 ${ss.c + ss.n} 次 · 正确 ${ss.c} · 错误 ${ss.n}</p>
-        <div class="bar"><span style="width:${p}%"></span></div></div>`;
+
+    let totalAll = 0, compAll = 0;
+    const list = Object.keys(QUESTION_BANK.subjects).map((s) => {
+      const sec = QUESTION_BANK.subjects[s].sections;
+      const total = sec.single.length + sec.multi.length + sec.judgment.length;
+      totalAll += total;
+      const ss = bySub[s] || { c: 0, n: 0, comp: 0 };
+      compAll += ss.comp;
+      const undone = total - ss.comp;
+      const p = ss.c + ss.n ? Math.round((ss.c / (ss.c + ss.n)) * 100) : 0;
+      return `<div class="stat-card"><h3>${SUB[s].name} · 共 ${total} 题</h3>
+        <p style="margin:0;color:var(--ink-soft);font-size:13px">已练习 <b style="color:var(--accent-dark)">${ss.comp}</b> 题 · 未练习 <b style="color:#c98b2f">${undone}</b> 题 · 作答 ${ss.c + ss.n} 次</p>
+        <div class="bar"><span style="width:${p}%"></span></div>
+        <p style="margin:6px 0 0;color:var(--ink-soft);font-size:12.5px">正确 ${ss.c} · 错误 ${ss.n}（正确率 ${p}%）</p></div>`;
     }).join('');
+
+    const undoneAll = totalAll - compAll;
     body.innerHTML = `
-      <div class="stat-card"><h3>总正确率</h3>
+      <div class="stat-card"><h3>总览</h3>
         <div class="score-big" style="font-size:40px">${ans}%</div>
         <p style="margin:0;color:var(--ink-soft);font-size:13px">累计作答 ${c + n} 次 · 正确 ${c} · 错误 ${n}</p>
+        <p style="margin:6px 0 0;font-size:13px">题库共 <b>${totalAll}</b> 题 · 已练习 <b style="color:var(--accent-dark)">${compAll}</b> · 未完成 <b style="color:#c98b2f">${undoneAll}</b></p>
         <div class="bar"><span style="width:${ans}%"></span></div></div>
       ${list}
       <div class="stat-card"><h3>当前错题 ${errorCount()} 题</h3>
@@ -616,6 +725,7 @@
     setupSeg('#paper-size', (b) => { state.paperSize = +b.dataset.size; });
     setupSeg('#special-type', (b) => { state.specialType = b.dataset.type; });
     setupSeg('#special-count', (b) => { state.specialCount = +b.dataset.count; });
+    setupSeg('#order-seg', (b) => { state.order = b.dataset.order; });
     $('#mix-check').addEventListener('change', (e) => { state.mix = e.target.checked; });
 
     $('#start-btn').addEventListener('click', () => startSession(state.mode));
