@@ -541,24 +541,28 @@
   /* ---------------- Photo recognition ---------------- */
   let photoImg = null;      // 原始选中的图 (dataURL)
   let photoData = null;     // 实际用于识别的图（裁剪后或整图）
-  let cropRect = null;      // {x,y,w,h} 原图坐标
-  let editorImg = null, dragging = false, dragStart = null;
+  let cropRect = null;      // {x,y,w,h} 原图坐标（＝参考框当前覆盖区域）
+  let edImg = null, natW = 0, natH = 0, tx = 0, ty = 0, scale = 1, minScale = 1;
+  let pointers = new Map(), panning = null, pinch = null;
+  const VIEW_H = 300;       // 裁剪视口高度
   const OCR_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
   let ocrLoaded = false, ocrWorker = null;
 
   function renderPhoto() {
     const body = $('#photo-body');
-    photoImg = null; photoData = null; cropRect = null; editorImg = null;
+    photoImg = null; photoData = null; cropRect = null; edImg = null;
     body.innerHTML = `
       <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none">
       <button class="btn-primary" id="photo-take">📷 拍照 / 选择图片</button>
-      <p class="hint" style="margin:6px 0">在图片上按住并拖动，框出要识别的题目区域，再点「裁剪选中」</p>
-      <div class="shoteditor" id="shoteditor"><span class="hint">选择图片后拖动框选</span></div>
+      <p class="hint" style="margin:6px 0">按住拖动图片、用 +/− 或双指缩放，把题目对准中间的<b>参考框</b>，再用「✂️ 裁剪选中」</p>
+      <div class="shoteditor" id="shoteditor"><span class="hint">选择图片后拖动对准</span></div>
       <div class="btn-row">
-        <button class="btn-ghost" id="photo-full" disabled>全选</button>
+        <button class="btn-ghost zoombtn" id="photo-zoomout" disabled>−</button>
+        <button class="btn-ghost zoombtn" id="photo-zoomin" disabled>＋</button>
         <button class="btn-ghost" id="photo-crop" disabled>✂️ 裁剪选中</button>
-        <button class="btn-ghost" id="photo-reset" disabled>还原整图</button>
+        <button class="btn-ghost" id="photo-reset" disabled>重置</button>
       </div>
+      <div class="cropInfo" id="cropInfo">选择区域：宽 0 × 高 0 px</div>
       <label class="label" style="margin-top:4px">裁剪预览（用于识别）</label>
       <div class="shot" id="photo-preview">尚未裁剪</div>
       <div class="btn-row">
@@ -572,7 +576,8 @@
     `;
     $('#photo-take').addEventListener('click', () => $('#photo-input').click());
     $('#photo-input').addEventListener('change', onPhotoPick);
-    $('#photo-full').addEventListener('click', selectAll);
+    $('#photo-zoomin').addEventListener('click', () => zoomAt(scale * 1.25));
+    $('#photo-zoomout').addEventListener('click', () => zoomAt(scale / 1.25));
     $('#photo-crop').addEventListener('click', doCrop);
     $('#photo-reset').addEventListener('click', resetCrop);
     $('#photo-ocr').addEventListener('click', () => runOcr());
@@ -580,12 +585,13 @@
     $('#photo-search').addEventListener('click', onPhotoSearch);
     $('#photo-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') onPhotoSearch(); });
 
-    // 拖动框选：pointerdown 在编辑区，move/up 挂 document（全局只挂一次）
-    $('#shoteditor').addEventListener('pointerdown', startDrag);
-    if (!renderPhoto._dragBound) {
-      document.addEventListener('pointermove', moveDrag);
-      document.addEventListener('pointerup', endDrag);
-      renderPhoto._dragBound = true;
+    // 拖动/双指缩放：pointerdown 在编辑区，move/up 挂 document（全局只挂一次）
+    $('#shoteditor').addEventListener('pointerdown', onPanStart);
+    if (!renderPhoto._panBound) {
+      document.addEventListener('pointermove', onPanMove);
+      document.addEventListener('pointerup', onPanEnd);
+      document.addEventListener('pointercancel', onPanEnd);
+      renderPhoto._panBound = true;
     }
   }
 
@@ -599,80 +605,106 @@
   function renderShotEditor() {
     const ed = $('#shoteditor');
     ed.innerHTML = '';
+    ed.style.height = VIEW_H + 'px';
     const img = document.createElement('img');
-    img.src = photoImg; img.style.width = '100%'; img.style.display = 'block';
+    img.className = 'cropimg';
+    img.src = photoImg;
     img.onload = () => {
-      editorImg = img;
-      const dispW = ed.clientWidth || img.naturalWidth;
-      img.style.height = (dispW * img.naturalHeight / img.naturalWidth) + 'px';
-      cropRect = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
-      updateEditorBtns();
-      drawCropBox();
+      edImg = img;
+      natW = img.naturalWidth; natH = img.naturalHeight;
+      const vw = ed.clientWidth || natW;
+      minScale = vw / natW; scale = minScale; tx = 0; ty = 0;
+      ed.appendChild(img);
+      // 固定参考框（拍题软件风格）
+      const sf = document.createElement('div'); sf.className = 'scanframe'; sf.id = 'scanframe';
+      sf.innerHTML = `<span class="sfcorner tl"></span><span class="sfcorner tr"></span><span class="sfcorner bl"></span><span class="sfcorner br"></span><span class="sftag">请将题目对准此框</span>`;
+      ed.appendChild(sf);
+      applyTransform(); updateCropRange();
     };
-    ed.appendChild(img);
   }
 
-  function editorScale() {
-    if (!editorImg) return 1;
-    const dispW = $('#shoteditor').clientWidth || editorImg.naturalWidth;
-    return editorImg.naturalWidth / dispW;
+  function applyTransform() {
+    if (edImg) edImg.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
   }
-  function toNatural(ev) {
-    const rect = $('#shoteditor').getBoundingClientRect();
-    const sc = editorScale();
-    return { x: (ev.clientX - rect.left) * sc, y: (ev.clientY - rect.top) * sc };
-  }
-  function normRect(a, b) { return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) }; }
 
-  function startDrag(ev) {
-    if (!editorImg) return;
-    dragging = true;
-    dragStart = toNatural(ev);
-    cropRect = { x: dragStart.x, y: dragStart.y, w: 0, h: 0 };
-    drawCropBox();
+  function frameRect() {
+    const vw = $('#shoteditor').clientWidth || natW || 1;
+    const fw = vw * 0.86, fh = VIEW_H * 0.52;
+    return { fx: (vw - fw) / 2, fy: (VIEW_H - fh) / 2, fw, fh };
   }
-  function moveDrag(ev) {
-    if (!dragging) return;
-    cropRect = normRect(dragStart, toNatural(ev));
-    drawCropBox();
-  }
-  function endDrag() {
-    if (!dragging) return;
-    dragging = false;
-    if (cropRect && (cropRect.w < 12 || cropRect.h < 12)) cropRect = null; // 太小则取消
-    drawCropBox();
+
+  function updateCropRange() {
+    if (!edImg) return;
+    const f = frameRect();
+    let nx = (f.fx - tx) / scale, ny = (f.fy - ty) / scale, nw = f.fw / scale, nh = f.fh / scale;
+    nx = clamp(nx, 0, natW); ny = clamp(ny, 0, natH); nw = clamp(nw, 0, natW - nx); nh = clamp(nh, 0, natH - ny);
+    cropRect = { x: Math.round(nx), y: Math.round(ny), w: Math.round(nw), h: Math.round(nh) };
+    const info = $('#cropInfo');
+    if (info) info.textContent = `选择区域：宽 ${cropRect.w} × 高 ${cropRect.h} px（约占图 ${Math.round(cropRect.w / natW * 100)}% × ${Math.round(cropRect.h / natH * 100)}%）`;
     updateEditorBtns();
   }
 
-  function drawCropBox() {
-    let ov = $('#cropbox');
-    const ed = $('#shoteditor');
-    if (!ov) { ov = document.createElement('div'); ov.id = 'cropbox'; ov.className = 'cropbox'; ed.appendChild(ov); }
-    if (!cropRect || !cropRect.w) { ov.style.display = 'none'; return; }
-    const sc = editorScale();
-    ov.style.display = 'block';
-    ov.style.left = (cropRect.x * sc) + 'px';
-    ov.style.top = (cropRect.y * sc) + 'px';
-    ov.style.width = (cropRect.w * sc) + 'px';
-    ov.style.height = (cropRect.h * sc) + 'px';
+  function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+  function bminX() { const vw = $('#shoteditor').clientWidth || natW || 1; return Math.min(0, vw - natW * scale); }
+  function bmaxX() { return 0; }
+  function bminY() { return Math.min(0, VIEW_H - natH * scale); }
+  function bmaxY() { return 0; }
+
+  function onPanStart(ev) {
+    if (!edImg) return;
+    ev.preventDefault();
+    pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (pointers.size === 1) panning = { x: ev.clientX, y: ev.clientY, tx, ty };
+    else if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      pinch = { dist: Math.hypot(b.x - a.x, b.y - a.y), scale };
+    }
+  }
+  function onPanMove(ev) {
+    if (!edImg || !pointers.has(ev.pointerId)) return;
+    pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (pointers.size === 1 && panning) {
+      tx = clamp(panning.tx + (ev.clientX - panning.x), bminX(), bmaxX());
+      ty = clamp(panning.ty + (ev.clientY - panning.y), bminY(), bmaxY());
+      applyTransform(); updateCropRange();
+    } else if (pointers.size === 2 && pinch) {
+      const [a, b] = [...pointers.values()];
+      const d = Math.hypot(b.x - a.x, b.y - a.y);
+      const target = pinch.scale * (d / pinch.dist);
+      zoomAt(target, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+      pinch.dist = d;
+    }
+  }
+  function onPanEnd(ev) {
+    pointers.delete(ev.pointerId);
+    if (pointers.size < 1) panning = null;
+    if (pointers.size < 2) pinch = null;
+  }
+
+  function zoomAt(newScale, anchor) {
+    if (!edImg) return;
+    const vw = $('#shoteditor').clientWidth;
+    newScale = clamp(newScale, minScale, minScale * 6);
+    const ax = anchor ? anchor.x : vw / 2;
+    const ay = anchor ? anchor.y : VIEW_H / 2;
+    const cx = (ax - tx) / scale, cy = (ay - ty) / scale;
+    tx = ax - cx * newScale; ty = ay - cy * newScale;
+    scale = newScale;
+    tx = clamp(tx, bminX(), bmaxX()); ty = clamp(ty, bminY(), bmaxY());
+    applyTransform(); updateCropRange();
   }
 
   function updateEditorBtns() {
     const has = !!photoImg;
-    $('#photo-full').disabled = !has;
-    $('#photo-crop').disabled = !has || !(cropRect && cropRect.w && cropRect.h);
+    $('#photo-crop').disabled = !has || !(cropRect && cropRect.w > 12 && cropRect.h > 12);
     $('#photo-reset').disabled = !has;
+    $('#photo-zoomin').disabled = !has;
+    $('#photo-zoomout').disabled = !has;
     $('#photo-ocr').disabled = !has;
   }
 
-  function selectAll() {
-    if (!editorImg) return;
-    cropRect = { x: 0, y: 0, w: editorImg.naturalWidth, h: editorImg.naturalHeight };
-    drawCropBox(); updateEditorBtns();
-  }
-
   function doCrop() {
-    if (!cropRect || cropRect.w < 12 || cropRect.h < 12) { alert('请先框选要裁剪的题目区域'); return; }
+    if (!cropRect || cropRect.w < 12 || cropRect.h < 12) { alert('请先把题目对准参考框并裁剪'); return; }
     const img = new Image();
     img.onload = () => {
       const c = document.createElement('canvas');
@@ -687,17 +719,18 @@
   }
 
   function resetCrop() {
-    if (!editorImg) return;
-    cropRect = { x: 0, y: 0, w: editorImg.naturalWidth, h: editorImg.naturalHeight };
+    if (!edImg) return;
+    scale = minScale; tx = 0; ty = 0;
     photoData = photoImg;
     $('#photo-preview').innerHTML = `<img src="${photoImg}" alt="full">`;
     $('#photo-ocr').textContent = '🔤 识别';
-    drawCropBox(); updateEditorBtns();
+    applyTransform(); updateCropRange();
   }
 
   function clearPhoto() {
-    photoImg = null; photoData = null; cropRect = null; editorImg = null;
-    $('#shoteditor').innerHTML = '<span class="hint">选择图片后拖动框选</span>';
+    photoImg = null; photoData = null; cropRect = null; edImg = null;
+    $('#shoteditor').style.height = '';
+    $('#shoteditor').innerHTML = '<span class="hint">选择图片后拖动对准</span>';
     $('#photo-preview').innerHTML = '尚未裁剪';
     $('#photo-q').value = '';
     $('#photo-results').innerHTML = '';
