@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#eaf3e9">
+<title>询练 · 电子商务师题库</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- HOME -->
+  <section class="view active" id="view-home">
+    <header class="top">
+      <h1 class="brand">询<span class="brand-accent">练</span></h1>
+      <p class="sub">电子商务师题库刷题 · 离线可用</p>
+    </header>
+
+    <div class="card-list">
+      <button class="card card-sm" data-action="practice">
+        <span class="card-ico">📝</span>
+        <span>
+          <strong>刷题练习</strong>
+          <small>自动组卷 / 专项练习</small>
+        </span>
+        <span class="chev">›</span>
+      </button>
+      <button class="card card-sm" data-action="errors">
+        <span class="card-ico">📕</span>
+        <span>
+          <strong>错题集</strong>
+          <small id="error-badge">当前 0 题</small>
+        </span>
+        <span class="chev">›</span>
+      </button>
+      <button class="card card-sm" data-action="photo">
+        <span class="card-ico">📷</span>
+        <span>
+          <strong>拍照识别错题</strong>
+          <small>拍下题目，从题库中比对</small>
+        </span>
+        <span class="chev">›</span>
+      </button>
+      <button class="card card-sm" data-action="stats">
+        <span class="card-ico">📊</span>
+        <span>
+          <strong>学习统计</strong>
+          <small>正确率 · 错题趋势</small>
+        </span>
+        <span class="chev">›</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- PRACTICE SETUP -->
+  <section class="view" id="view-setup">
+    <header class="top">
+      <button class="btn-back" data-back>‹</button>
+      <h1 class="title">刷题设置</h1>
+    </header>
+
+    <div class="setup">
+      <div class="field">
+        <label class="label">选择科目</label>
+        <div class="seg" id="subject-seg">
+          <button class="seg-btn" data-subject="dianzi">电子</button>
+          <button class="seg-btn" data-subject="zhubo">主播</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="label">练习模式</label>
+        <div class="seg" id="mode-seg">
+          <button class="seg-btn" data-mode="paper">自动组卷</button>
+          <button class="seg-btn" data-mode="special">专项练习</button>
+        </div>
+      </div>
+
+      <!-- paper config -->
+      <div id="paper-config" class="field">
+        <label class="label">试题数量</label>
+        <div class="seg" id="paper-size">
+          <button class="seg-btn" data-size="10">10</button>
+          <button class="seg-btn" data-size="20">20</button>
+          <button class="seg-btn" data-size="30">30</button>
+          <button class="seg-btn" data-size="40">40</button>
+        </div>
+        <p class="hint">每套卷均包含单选、多选、判断三类</p>
+      </div>
+
+      <!-- special config -->
+      <div id="special-config" class="field hidden">
+        <label class="label">题型</label>
+        <div class="seg" id="special-type">
+          <button class="seg-btn" data-type="single">单选</button>
+          <button class="seg-btn" data-type="multi">多选</button>
+          <button class="seg-btn" data-type="judgment">判断</button>
+        </div>
+        <label class="label">数量</label>
+        <div class="seg" id="special-count">
+          <button class="seg-btn" data-count="10">10</button>
+          <button class="seg-btn" data-count="20">20</button>
+          <button class="seg-btn" data-count="30">30</button>
+        </div>
+      </div>
+
+      <label class="toggle-row">
+        <input type="checkbox" id="mix-check" checked>
+        <span>侧重错题（错题优先，自动穿插）</span>
+      </label>
+
+      <button class="btn-primary" id="start-btn">开始刷题</button>
+    </div>
+  </section>
+
+  <!-- PRACTICE SESSION -->
+  <section class="view" id="view-session">
+    <header class="top">
+      <button class="btn-back" data-back data-confirm>‹</button>
+      <h1 class="title" id="session-title">刷题</h1>
+      <span class="progress" id="session-progress">1 / 20</span>
+    </header>
+    <div class="session-body" id="session-body"><!-- rendered --></div>
+    <div class="session-foot">
+      <button class="btn-primary hidden" id="next-btn">下一题 ›</button>
+      <button class="btn-primary hidden" id="finish-btn">查看结果</button>
+    </div>
+  </section>
+
+  <!-- RESULT -->
+  <section class="view" id="view-result">
+    <header class="top"><h1 class="title">本次成绩</h1></header>
+    <div class="result" id="result-body"><!-- rendered --></div>
+  </section>
+
+  <!-- ERROR BOOK -->
+  <section class="view" id="view-errors">
+    <header class="top">
+      <button class="btn-back" data-back>‹</button>
+      <h1 class="title">错题集</h1>
+    </header>
+    <div class="errors-body" id="errors-body"><!-- rendered --></div>
+  </section>
+
+  <!-- PHOTO -->
+  <section class="view" id="view-photo">
+    <header class="top">
+      <button class="btn-back" data-back>‹</button>
+      <h1 class="title">拍照识别错题</h1>
+    </header>
+    <div class="photo-body" id="photo-body"><!-- rendered --></div>
+  </section>
+
+  <!-- STATS -->
+  <section class="view" id="view-stats">
+    <header class="top"><h1 class="title">学习统计</h1></header>
+    <div class="stats-body" id="stats-body"><!-- rendered --></div>
+  </section>
+
+  <!-- ABOUT / INSTALL HINT -->
+  <section class="view" id="view-about">
+    <header class="top">
+      <button class="btn-back" data-back>‹</button>
+      <h1 class="title">安装使用</h1>
+    </header>
+    <div class="about-body" id="about-body"><!-- rendered --></div>
+  </section>
+
+  <!-- BOTTOM NAV -->
+  <nav class="bottom-nav" id="bottom-nav">
+    <button class="nav-btn active" data-nav="home"><span>🏠</span>首页</button>
+    <button class="nav-btn" data-nav="errors"><span>📕</span>错题</button>
+    <button class="nav-btn" data-nav="photo"><span>📷</span>拍照</button>
+    <button class="nav-btn" data-nav="stats"><span>📊</span>统计</button>
+    <button class="nav-btn" data-nav="about"><span>ℹ️</span>安装</button>
+  </nav>
+
+</div>
+<script src="bank-data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
