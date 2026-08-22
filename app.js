@@ -539,48 +539,185 @@
   }
 
   /* ---------------- Photo recognition ---------------- */
-  let photoImg = null;
+  let photoImg = null;      // 原始选中的图 (dataURL)
+  let photoData = null;     // 实际用于识别的图（裁剪后或整图）
+  let cropRect = null;      // {x,y,w,h} 原图坐标
+  let editorImg = null, dragging = false, dragStart = null;
   const OCR_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
   let ocrLoaded = false, ocrWorker = null;
 
   function renderPhoto() {
     const body = $('#photo-body');
+    photoImg = null; photoData = null; cropRect = null; editorImg = null;
     body.innerHTML = `
       <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none">
       <button class="btn-primary" id="photo-take">📷 拍照 / 选择图片</button>
-      <div class="shot" id="photo-preview">拍照后在此预览</div>
+      <p class="hint" style="margin:6px 0">在图片上按住并拖动，框出要识别的题目区域，再点「裁剪选中」</p>
+      <div class="shoteditor" id="shoteditor"><span class="hint">选择图片后拖动框选</span></div>
       <div class="btn-row">
-        <button class="btn-ghost" id="photo-ocr">🔤 文字识别 (可选)</button>
+        <button class="btn-ghost" id="photo-full" disabled>全选</button>
+        <button class="btn-ghost" id="photo-crop" disabled>✂️ 裁剪选中</button>
+        <button class="btn-ghost" id="photo-reset" disabled>还原整图</button>
+      </div>
+      <label class="label" style="margin-top:4px">裁剪预览（用于识别）</label>
+      <div class="shot" id="photo-preview">尚未裁剪</div>
+      <div class="btn-row">
+        <button class="btn-ghost" id="photo-ocr" disabled>🔤 识别</button>
         <button class="btn-ghost" id="photo-clear" style="border-color:var(--line);color:var(--ink-soft)">清除</button>
       </div>
-      <label class="label" style="margin-top:4px">若识别失败，输入题干关键词进行比对</label>
+      <label class="label" style="margin-top:4px">识别失败可手动输入题干关键词</label>
       <input class="search-in" id="photo-q" placeholder="例如：CPM 千次展示成本">
-      <button class="btn-primary" id="photo-search" style="margin-top:8px">比对题库</button>
+      <button class="btn-primary" id="photo-search" style="margin-top:8px">比对题库（直接给出答案）</button>
       <div id="photo-results"></div>
     `;
     $('#photo-take').addEventListener('click', () => $('#photo-input').click());
-    $('#photo-input').addEventListener('change', (e) => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { photoImg = rd.result; $('#photo-preview').innerHTML = `<img src="${photoImg}" alt="photo">`; }; rd.readAsDataURL(f); });
-    $('#photo-clear').addEventListener('click', () => { photoImg = null; $('#photo-preview').innerHTML = '拍照后在此预览'; $('#photo-results').innerHTML = ''; });
+    $('#photo-input').addEventListener('change', onPhotoPick);
+    $('#photo-full').addEventListener('click', selectAll);
+    $('#photo-crop').addEventListener('click', doCrop);
+    $('#photo-reset').addEventListener('click', resetCrop);
     $('#photo-ocr').addEventListener('click', () => runOcr());
+    $('#photo-clear').addEventListener('click', clearPhoto);
     $('#photo-search').addEventListener('click', onPhotoSearch);
     $('#photo-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') onPhotoSearch(); });
+
+    // 拖动框选：pointerdown 在编辑区，move/up 挂 document（全局只挂一次）
+    $('#shoteditor').addEventListener('pointerdown', startDrag);
+    if (!renderPhoto._dragBound) {
+      document.addEventListener('pointermove', moveDrag);
+      document.addEventListener('pointerup', endDrag);
+      renderPhoto._dragBound = true;
+    }
+  }
+
+  function onPhotoPick(e) {
+    const f = e.target.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { photoImg = rd.result; photoData = photoImg; cropRect = null; renderShotEditor(); };
+    rd.readAsDataURL(f);
+  }
+
+  function renderShotEditor() {
+    const ed = $('#shoteditor');
+    ed.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = photoImg; img.style.width = '100%'; img.style.display = 'block';
+    img.onload = () => {
+      editorImg = img;
+      const dispW = ed.clientWidth || img.naturalWidth;
+      img.style.height = (dispW * img.naturalHeight / img.naturalWidth) + 'px';
+      cropRect = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+      updateEditorBtns();
+      drawCropBox();
+    };
+    ed.appendChild(img);
+  }
+
+  function editorScale() {
+    if (!editorImg) return 1;
+    const dispW = $('#shoteditor').clientWidth || editorImg.naturalWidth;
+    return editorImg.naturalWidth / dispW;
+  }
+  function toNatural(ev) {
+    const rect = $('#shoteditor').getBoundingClientRect();
+    const sc = editorScale();
+    return { x: (ev.clientX - rect.left) * sc, y: (ev.clientY - rect.top) * sc };
+  }
+  function normRect(a, b) { return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) }; }
+
+  function startDrag(ev) {
+    if (!editorImg) return;
+    dragging = true;
+    dragStart = toNatural(ev);
+    cropRect = { x: dragStart.x, y: dragStart.y, w: 0, h: 0 };
+    drawCropBox();
+  }
+  function moveDrag(ev) {
+    if (!dragging) return;
+    cropRect = normRect(dragStart, toNatural(ev));
+    drawCropBox();
+  }
+  function endDrag() {
+    if (!dragging) return;
+    dragging = false;
+    if (cropRect && (cropRect.w < 12 || cropRect.h < 12)) cropRect = null; // 太小则取消
+    drawCropBox();
+    updateEditorBtns();
+  }
+
+  function drawCropBox() {
+    let ov = $('#cropbox');
+    const ed = $('#shoteditor');
+    if (!ov) { ov = document.createElement('div'); ov.id = 'cropbox'; ov.className = 'cropbox'; ed.appendChild(ov); }
+    if (!cropRect || !cropRect.w) { ov.style.display = 'none'; return; }
+    const sc = editorScale();
+    ov.style.display = 'block';
+    ov.style.left = (cropRect.x * sc) + 'px';
+    ov.style.top = (cropRect.y * sc) + 'px';
+    ov.style.width = (cropRect.w * sc) + 'px';
+    ov.style.height = (cropRect.h * sc) + 'px';
+  }
+
+  function updateEditorBtns() {
+    const has = !!photoImg;
+    $('#photo-full').disabled = !has;
+    $('#photo-crop').disabled = !has || !(cropRect && cropRect.w && cropRect.h);
+    $('#photo-reset').disabled = !has;
+    $('#photo-ocr').disabled = !has;
+  }
+
+  function selectAll() {
+    if (!editorImg) return;
+    cropRect = { x: 0, y: 0, w: editorImg.naturalWidth, h: editorImg.naturalHeight };
+    drawCropBox(); updateEditorBtns();
+  }
+
+  function doCrop() {
+    if (!cropRect || cropRect.w < 12 || cropRect.h < 12) { alert('请先框选要裁剪的题目区域'); return; }
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = cropRect.w; c.height = cropRect.h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, cropRect.x, cropRect.y, cropRect.w, cropRect.h, 0, 0, cropRect.w, cropRect.h);
+      photoData = c.toDataURL('image/png');
+      $('#photo-preview').innerHTML = `<img src="${photoData}" alt="crop">`;
+      $('#photo-ocr').textContent = '🔤 识别（已裁剪）';
+    };
+    img.src = photoImg;
+  }
+
+  function resetCrop() {
+    if (!editorImg) return;
+    cropRect = { x: 0, y: 0, w: editorImg.naturalWidth, h: editorImg.naturalHeight };
+    photoData = photoImg;
+    $('#photo-preview').innerHTML = `<img src="${photoImg}" alt="full">`;
+    $('#photo-ocr').textContent = '🔤 识别';
+    drawCropBox(); updateEditorBtns();
+  }
+
+  function clearPhoto() {
+    photoImg = null; photoData = null; cropRect = null; editorImg = null;
+    $('#shoteditor').innerHTML = '<span class="hint">选择图片后拖动框选</span>';
+    $('#photo-preview').innerHTML = '尚未裁剪';
+    $('#photo-q').value = '';
+    $('#photo-results').innerHTML = '';
+    $('#photo-ocr').textContent = '🔤 识别';
+    updateEditorBtns();
   }
 
   async function runOcr() {
-    const pres = $('#photo-preview');
-    if (!photoImg) { alert('请先拍照或选择图片'); return; }
+    if (!photoData) { alert('请先拍照/选择图片'); return; }
     const btn = $('#photo-ocr');
     btn.disabled = true; btn.textContent = '识别中…';
     try {
       await ensureOcr();
-      btn.textContent = '识别中…';
-      const { data } = await ocrWorker.recognize(photoImg);
-      const text = (data.text || '').trim();
-      if (text) { $('#photo-q').value = text.replace(/\s+/g, ' ').slice(0, 120); onPhotoSearch(); }
-      else { $('#photo-q').placeholder = '未识别到文字，请手动输入关键词'; }
+      const { data } = await ocrWorker.recognize(photoData);
+      const text = (data.text || '').replace(/\s+/g, ' ').trim();
+      if (text) { $('#photo-q').value = text; onPhotoSearch(); }
+      else { $('#photo-q').placeholder = '未识别到文字，请手动输入关键词'; alert('未识别到文字，可手动输入'); }
     } catch (err) {
-      btn.textContent = '文字识别失败，请手动输入';
-    } finally { btn.disabled = false; }
+      btn.textContent = '识别失败，请手动输入';
+    } finally { btn.disabled = false; updateEditorBtns(); }
   }
 
   function ensureOcr() {
@@ -604,27 +741,56 @@
 
   function normText(s) { return (s || '').toLowerCase().replace(/[\s，。；、：（）()〔〕【】""''"“”‘’·.—\-_/\\,.!?！？:;]/g, ''); }
 
-  function onPhotoSearch() {
-    const qraw = $('#photo-q').value;
-    if (!qraw.trim()) { alert('请输入或识别题干关键词'); return; }
-    const nq = normText(qraw);
-    const results = [];
+  function answerText(q) {
+    if (q.type === 'judgment') return q.answer === true ? '正确（√）' : '错误（×）';
+    if (q.type === 'single') return q.answer[0];
+    return q.answer.join('、');
+  }
+
+  // 从一段文字（OCR结果或关键词）里找出多道匹配题目，并直接给出答案
+  function matchQuestionsInText(raw) {
+    const nText = normText(raw);
+    if (nText.length < 2) return [];
+    const res = [];
     for (const sub of Object.keys(QUESTION_BANK.subjects)) {
       for (const t of Object.keys(QUESTION_BANK.subjects[sub].sections)) {
-        for (const it of QUESTION_BANK.subjects[sub].sections[t]) {
-          const hay = normText(it.stem + ' ' + it.options.map((o) => o.text).join(' '));
-          let score = 0;
-          for (let i = 0; i < nq.length; i++) if (hay.includes(nq[i])) score++;
-          if (score > 0) results.push({ it, score: score / nq.length, sub });
+        for (const q of QUESTION_BANK.subjects[sub].sections[t]) {
+          const nStem = normText(q.stem);
+          const hay = normText(q.stem + ' ' + q.options.map((o) => o.text).join(' '));
+          // 方向A：关键词出现在题干/选项中（用户输入短词）
+          let a = 0; for (const ch of nText) if (hay.includes(ch)) a++;
+          const aF = nText.length ? a / nText.length : 0;
+          // 方向B：题干字符按序出现在整段文字中（OCR 较长文本，可同时命中多题）
+          let b = 0, idx = 0;
+          for (const ch of nStem) { const j = nText.indexOf(ch, idx); if (j >= 0) { b++; idx = j + 1; } }
+          const bF = nStem.length ? b / nStem.length : 0;
+          const sc = Math.max(aF, bF);
+          if ((aF >= 0.6 && nText.length >= 2) || (bF >= 0.6 && nStem.length >= 8)) {
+            res.push({ q, sub, score: sc, bF });
+          }
         }
       }
     }
-    results.sort((a, b) => b.score - a.score || (a.it.stem.length > b.it.stem.length ? -1 : 1));
-    const top = results.slice(0, 8);
-    $('#photo-results').innerHTML = top.length
-      ? top.map((r) => `<div class="match-item" data-id="${r.it.id}"><span class="pill">${SUB[r.sub].name}·${TYPE[r.it.type].name}</span><div class="st">${escapeHtml(r.it.stem)}</div></div>`).join('')
-      : '<div class="empty">未找到匹配题目，请换关键词</div>';
+    res.sort((a, b) => (b.score - a.score) || (b.bF - a.bF));
+    return res.slice(0, 6);
+  }
+
+  function renderMatches(results) {
+    const box = $('#photo-results');
+    if (!results.length) { box.innerHTML = '<div class="empty">未找到匹配题目，请换关键词或调整裁剪区域</div>'; return; }
+    box.innerHTML = results.map((r) => `
+      <div class="match-item" data-id="${r.q.id}">
+        <div class="st"><span class="pill">${SUB[r.sub].name}·${TYPE[r.q.type].name}</span>${escapeHtml(r.q.stem)}</div>
+        <div class="manswer">本题答案：<b>${answerText(r.q)}</b></div>
+        <div class="menex">${escapeHtml(r.q.explanation || '')}</div>
+      </div>`).join('');
     $$('#photo-results .match-item').forEach((el) => el.addEventListener('click', () => openQuestionById(el.dataset.id)));
+  }
+
+  function onPhotoSearch() {
+    const raw = $('#photo-q').value;
+    if (!raw.trim()) { alert('请先截取/识别，或输入题干关键词'); return; }
+    renderMatches(matchQuestionsInText(raw));
   }
 
   /* ---------------- Stats ---------------- */
@@ -729,7 +895,6 @@
     $('#mix-check').addEventListener('change', (e) => { state.mix = e.target.checked; });
 
     $('#start-btn').addEventListener('click', () => startSession(state.mode));
-    $$('#view-setup .btn-back').forEach((b) => b.addEventListener('click', () => showView('home')));
   }
 
   /* ---------------- Boot ---------------- */
@@ -757,6 +922,14 @@
     bindSetup();
     renderAbout();
     refreshHomeBadge();
+
+    // 全局“返回”按钮（顶栏左上角）：所有 data-back 都能返回首页；session 需确认
+    document.addEventListener('click', (e) => {
+      const b = e.target.closest('.btn-back');
+      if (!b) return;
+      if (b.dataset.confirm && !confirm('确定退出本次刷题吗？本次作答记录会保留。')) return;
+      showView('home');
+    });
 
     // service worker
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
