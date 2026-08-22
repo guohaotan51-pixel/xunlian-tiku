@@ -175,6 +175,15 @@ body{
 .result-msg{font-size:18px;font-weight:800;color:var(--ink);margin-top:4px}
 .result-sub{font-size:13px;color:var(--ink-soft);margin-top:2px}
 
+/* photo crop editor + direct-answer matches */
+.shoteditor{position:relative;width:100%;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:var(--bg);min-height:120px;cursor:crosshair;user-select:none;touch-action:none}
+.shoteditor img{pointer-events:none}
+.shoteditor .hint{display:flex;align-items:center;justify-content:center;height:120px;color:var(--ink-soft)}
+.cropbox{position:absolute;border:2px dashed var(--accent-dark);background:rgba(124,174,138,.18);box-shadow:0 0 0 9999px rgba(0,0,0,.18);pointer-events:none}
+.manswer{margin-top:6px;font-size:14px;color:var(--ink)}
+.manswer b{color:var(--green);font-size:15px}
+.menex{margin-top:4px;font-size:12.5px;color:var(--ink-soft);line-height:1.5}
+
 @media (max-width:420px){
   .q-stem{font-size:15.5px}
 }
