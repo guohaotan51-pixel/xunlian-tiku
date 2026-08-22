@@ -175,11 +175,21 @@ body{
 .result-msg{font-size:18px;font-weight:800;color:var(--ink);margin-top:4px}
 .result-sub{font-size:13px;color:var(--ink-soft);margin-top:2px}
 
-/* photo crop editor + direct-answer matches */
-.shoteditor{position:relative;width:100%;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:var(--bg);min-height:120px;cursor:crosshair;user-select:none;touch-action:none}
-.shoteditor img{pointer-events:none}
-.shoteditor .hint{display:flex;align-items:center;justify-content:center;height:120px;color:var(--ink-soft)}
-.cropbox{position:absolute;border:2px dashed var(--accent-dark);background:rgba(124,174,138,.18);box-shadow:0 0 0 9999px rgba(0,0,0,.18);pointer-events:none}
+/* photo crop editor (拍题参照框) + direct-answer matches */
+.shoteditor{position:relative;width:100%;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#3a3f3a;cursor:grab;user-select:none;touch-action:none}
+.shoteditor:active{cursor:grabbing}
+.shoteditor .hint{display:flex;align-items:center;justify-content:center;height:120px;color:#c9cfc9}
+.cropimg{position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none;max-width:none}
+.scanframe{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+.scanframe::before{content:'';position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:86%;height:52%;border:2px dashed rgba(124,174,138,.95);border-radius:8px;background:rgba(124,174,138,.10);box-shadow:0 0 0 9999px rgba(0,0,0,.38)}
+.sfcorner{position:absolute;width:16px;height:16px;border:3px solid #7cae8a;pointer-events:none}
+.sfcorner.tl{left:calc(7% - 8px);top:calc(24% - 8px);border-right:none;border-bottom:none}
+.sfcorner.tr{right:calc(7% - 8px);top:calc(24% - 8px);border-left:none;border-bottom:none}
+.sfcorner.bl{left:calc(7% - 8px);bottom:calc(24% - 8px);border-right:none;border-top:none}
+.sfcorner.br{right:calc(7% - 8px);bottom:calc(24% - 8px);border-left:none;border-top:none}
+.sftag{position:absolute;left:50%;top:calc(50% + 26% + 8px);transform:translateX(-50%);background:rgba(124,174,138,.95);color:#fff;font-size:12px;padding:3px 10px;border-radius:12px;white-space:nowrap}
+.cropInfo{margin:6px 2px 0;font-size:12.5px;color:var(--ink-soft);font-variant-numeric:tabular-nums}
+.zoombtn{flex:0 0 64px!important;font-size:22px;font-weight:700;padding:10px!important;margin:0}
 .manswer{margin-top:6px;font-size:14px;color:var(--ink)}
 .manswer b{color:var(--green);font-size:15px}
 .menex{margin-top:4px;font-size:12.5px;color:var(--ink-soft);line-height:1.5}
