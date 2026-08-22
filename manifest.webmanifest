@@ -1,0 +1,17 @@
+{
+  "name": "询练 · 电子商务师题库",
+  "short_name": "询练",
+  "description": "电子商务师题库刷题：电子/主播两科，单选、多选、判断，错题集与拍照识别。离线可用。",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f2ec",
+  "theme_color": "#eaf3e9",
+  "orientation": "portrait",
+  "categories": ["education"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "any", "type": "image/png" }
+  ]
+}
