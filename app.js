@@ -4,6 +4,7 @@
  */
 (function () {
   'use strict';
+  const APP_VERSION = 'v3.0';
 
   /* ---------------- Storage ---------------- */
   const STORE_KEY = 'xunlian_progress_v1';
@@ -964,10 +965,25 @@
       showView('home');
     });
 
-    // service worker
+    // service worker：network-first，且新版本接管时自动刷新，解决“手机不更新”问题
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+      window.addEventListener('load', () => {
+        const hadController = !!navigator.serviceWorker.controller;
+        navigator.serviceWorker.register('sw.js').then((reg) => { if (reg.update) reg.update(); }).catch(() => {});
+        if (hadController) {
+          let reloaded = false;
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (reloaded) return;
+            reloaded = true;
+            setTimeout(() => window.location.reload(), 400);
+          });
+        }
+      });
     }
+
+    // 首页副标题显示版本号，方便确认是否已是最新
+    const sub = document.querySelector('.sub');
+    if (sub) sub.textContent = `电子商务师题库刷题 · 离线可用 · ${APP_VERSION}`;
   }
 
   document.addEventListener('DOMContentLoaded', init);
