@@ -739,13 +739,43 @@
     updateEditorBtns();
   }
 
+  // 识别前预处理：缩小到合理尺寸 + 灰度 + 提对比度，大幅提速并减少乱码
+  function preprocess(src, maxDim) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.naturalWidth, h = img.naturalHeight;
+        const sc = Math.min(1, maxDim / Math.max(w, h));
+        const cw = Math.max(2, Math.round(w * sc)), ch = Math.max(2, Math.round(h * sc));
+        const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cw, ch);
+        ctx.drawImage(img, 0, 0, cw, ch);
+        const d = ctx.getImageData(0, 0, cw, ch);
+        const px = d.data;
+        for (let i = 0; i < px.length; i += 4) {
+          const g = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+          const v = (g - 128) * 1.35 + 128; // 提高对比度，压低噪点
+          const cl = v < 0 ? 0 : (v > 255 ? 255 : v);
+          px[i] = px[i + 1] = px[i + 2] = cl;
+        }
+        ctx.putImageData(d, 0, 0);
+        resolve(c.toDataURL('image/png'));
+      };
+      img.onerror = () => resolve(src);
+      img.src = src;
+    });
+  }
+
   async function runOcr() {
     if (!photoData) { alert('请先拍照/选择图片'); return; }
     const btn = $('#photo-ocr');
-    btn.disabled = true; btn.textContent = '识别中…';
+    btn.disabled = true; btn.textContent = '识别中…（首次需联网下载模型）';
     try {
-      await ensureOcr();
-      const { data } = await ocrWorker.recognize(photoData);
+      await ensureOcr(btn);
+      btn.textContent = '识别中…';
+      const prep = await preprocess(photoData, 1100);
+      const { data } = await ocrWorker.recognize(prep);
       const text = (data.text || '').replace(/\s+/g, ' ').trim();
       if (text) { $('#photo-q').value = text; onPhotoSearch(); }
       else { $('#photo-q').placeholder = '未识别到文字，请手动输入关键词'; alert('未识别到文字，可手动输入'); }
@@ -754,9 +784,14 @@
     } finally { btn.disabled = false; updateEditorBtns(); }
   }
 
-  function ensureOcr() {
+  function ensureOcr(btn) {
     if (ocrWorker) return Promise.resolve();
     return new Promise((resolve, reject) => {
+      const logger = (m) => {
+        if (!btn) return;
+        const p = m && m.progress ? ' ' + Math.round(m.progress * 100) + '%' : '';
+        if (m && m.status) btn.textContent = '识别中…' + p;
+      };
       if (ocrLoaded) { resolve(); return; }
       const s = document.createElement('script');
       s.src = OCR_URL; s.async = true;
@@ -764,8 +799,12 @@
         ocrLoaded = true;
         try {
           // eslint-disable-next-line no-undef
-          ocrWorker = Tesseract.createWorker('chi_sim+eng', 1, { logger: () => {} });
-          ocrWorker.then((w) => { ocrWorker = w; resolve(); }).catch(reject);
+          const w = Tesseract.createWorker('chi_sim+eng', 1, { logger });
+          w.then(async (worker) => {
+            // PSM 6：把画面当作“单个文字块”，适合识别单道题，减少乱码
+            try { await worker.setParameters({ tessedit_pageseg_mode: '6' }); } catch (e) {}
+            ocrWorker = worker; resolve();
+          }).catch(reject);
         } catch (e) { reject(e); }
       };
       s.onerror = () => reject(new Error('load fail'));
