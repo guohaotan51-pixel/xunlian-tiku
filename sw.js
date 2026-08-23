@@ -1,5 +1,8 @@
-/* 询练 PWA service worker: cache-first for offline use. */
-const CACHE = 'xunlian-v1';
+/* 询练 PWA service worker
+ * 策略：network-first（在线永远取最新版本，离线回退缓存）+
+ * 版本号递增 + 新 SW 激活后自动刷新旧页面，从而解决“网上已更新、手机仍是旧版”的问题。
+ */
+const CACHE = 'xunlian-v3';
 const ASSETS = [
   './index.html',
   './styles.css',
@@ -17,28 +20,35 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+  e.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)));
+    await self.clients.claim();
+    // 新版本生效时，刷新已打开/已安装的页面，让它们立刻拿到新资源
+    const clients = await self.clients.matchAll({ type: 'window' });
+    clients.forEach((c) => { c.navigate(c.url).catch(() => {}); });
+  })());
 });
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   const url = new URL(e.request.url);
-  // Only handle same-origin GETs; let cross-origin (OCR CDN etc.) go to network.
   if (url.origin !== location.origin) return;
+  // network-first
   e.respondWith(
-    caches.match(e.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(e.request).then((res) => {
-        if (res && res.status === 200 && res.type === 'basic') {
+    fetch(e.request)
+      .then((res) => {
+        if (res && res.status === 200) {
           const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, copy));
+          caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
         }
         return res;
-      });
-    })
+      })
+      .catch(() => caches.match(e.request).then((cached) => {
+        if (cached) return cached;
+        // 导航请求离线时回退到缓存的首页
+        if (e.request.mode === 'navigate') return caches.match('./index.html');
+        return Response.error();
+      }))
   );
 });
